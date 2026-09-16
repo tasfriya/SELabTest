@@ -8,6 +8,7 @@ cover three failure modes:
   * 422 - a body that fails validation (empty title, missing title,
           unknown enum value for priority or status)
   * 422 - a path parameter that is not an integer
+  * 400 - a PUT with no fields to update
 
 Each test runs against a freshly emptied store thanks to the autouse
 ``reset_state`` fixture, so the tests can run in any order.
@@ -16,7 +17,7 @@ Each test runs against a freshly emptied store thanks to the autouse
 import pytest
 from fastapi.testclient import TestClient
 
-from src.main import app, reset_tasks
+from src.main import app, reset_store
 
 client = TestClient(app)
 
@@ -28,9 +29,9 @@ def reset_state():
     Without this the id counter and the stored tasks would leak from one test
     into the next, making the suite order-dependent.
     """
-    reset_tasks()
+    reset_store()
     yield
-    reset_tasks()
+    reset_store()
 
 
 def make_task(
@@ -144,7 +145,7 @@ def test_update_task_replaces_every_field_but_keeps_the_id():
         json=make_task(
             title="New title",
             description="Updated description",
-            status="completed",
+            status="done",
             priority="high",
         ),
     )
@@ -154,7 +155,7 @@ def test_update_task_replaces_every_field_but_keeps_the_id():
     assert body["id"] == created["id"]
     assert body["title"] == "New title"
     assert body["description"] == "Updated description"
-    assert body["status"] == "completed"
+    assert body["status"] == "done"
     assert body["priority"] == "high"
 
 
@@ -167,6 +168,25 @@ def test_update_task_is_visible_on_a_later_get():
 
     assert response.status_code == 200
     assert response.json()["title"] == "After"
+
+
+def test_update_task_with_partial_body_only_changes_given_fields():
+    """PUT is a partial update: fields left out keep their previous value."""
+    created = create_task(
+        title="Original title",
+        description="Original description",
+        status="pending",
+        priority="low",
+    )
+
+    response = client.put(f"/tasks/{created['id']}", json={"status": "in_progress"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "in_progress"
+    assert body["title"] == "Original title"
+    assert body["description"] == "Original description"
+    assert body["priority"] == "low"
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +290,15 @@ def test_get_task_with_non_integer_id_returns_422():
     response = client.get("/tasks/not-a-number")
 
     assert response.status_code == 422
+
+
+def test_update_task_with_no_fields_returns_400():
+    """Invalid scenario 9: an empty PUT body has nothing to change."""
+    created = create_task(title="Untouched")
+
+    response = client.put(f"/tasks/{created['id']}", json={})
+
+    assert response.status_code == 400
 
 
 def test_failed_create_does_not_change_the_store():
